@@ -1,0 +1,14 @@
+{
+  "account": {
+    "enterpriseId": "",
+    "nickname": "your-account-name",
+    "uid": "00000000-0000-0000-0000-000000000000"
+  },
+  "auth": {
+    "accessToken": "",
+    "domain": "https://example.invalid",
+    "expiresAt": 0,
+    "realm": "",
+    "refreshToken": ""
+  }
+}

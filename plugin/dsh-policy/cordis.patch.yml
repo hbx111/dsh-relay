@@ -1,0 +1,7 @@
+# dsh-policy 组合包 patch：一行。
+# 作为 profile 组合包（package.json 的 dsh.profile.bundles）安装后，由这一行插入宿主半区；
+# 本包不再需要写进 profile 的 cordis.patch.yml —— 那边的 insert 会与这一行撞同一个 id。
+# 数据与开关在 ~/.dsh/policy/config.json 的 retry 段。
+- insert:
+    - id: dsh-policy
+      name: "dsh-policy"

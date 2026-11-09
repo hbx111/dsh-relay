@@ -1,0 +1,16 @@
+# 运行时产物
+logs/
+__pycache__/
+*.pyc
+
+# 排查用开关与备份
+dump.on
+restore-system.on
+*.bak-*
+
+# 你自己的配置与账号凭据 —— 绝对不要提交
+wb2api/config.json
+wb2api/data/
+wb2api/logs/
+wb2api/auths/*.json
+!wb2api/auths/example.json

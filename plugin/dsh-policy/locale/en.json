@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Refusal Retry",
+    "description": "Detects a model refusal inside the streaming response and resends it (up to 2 times) without buffering the whole reply, so streaming stays intact. Stops retrying once the upstream truncates with content_filter. Settings and logs live in ~/.dsh/policy."
+  }
+}

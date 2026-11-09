@@ -1,0 +1,35 @@
+{
+  "name": "dsh-policy",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "description": "在 dsh 客户侧对 LLM 响应做流内判拒并自动重发：只看开头几块，被拒那次不吐给上层，因此流式输出不受影响。识别上游 content_filter 断流并停止无意义的重试。",
+  "license": "MIT",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "package.json",
+    "locale"
+  ],
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "cordis",
+    "llm-stream",
+    "retry"
+  ],
+  "engines": {
+    "dsh": ">=0.2.0-rc.1"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
