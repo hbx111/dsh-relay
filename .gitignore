@@ -9,8 +9,13 @@ restore-system.on
 *.bak-*
 
 # 你自己的配置与账号凭据 —— 绝对不要提交
-wb2api/config.json
-wb2api/data/
-wb2api/logs/
-wb2api/auths/*.json
-!wb2api/auths/example.json
+windows/wb2api/config.json
+windows/wb2api/data/
+windows/wb2api/logs/
+windows/wb2api/auths/*.json
+!windows/wb2api/auths/example.json
+
+# Linux 部署后在机器上生成的（仓库里只有模板）
+linux/config.json
+linux/auths/*.json
+linux/data/

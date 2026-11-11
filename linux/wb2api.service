@@ -1,0 +1,19 @@
+[Unit]
+Description=wb2api gateway (WorkBuddy to OpenAI-compatible API)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wb2api
+Group=wb2api
+WorkingDirectory=/opt/wb2api
+ExecStart=/opt/wb2api/wb2api -config /opt/wb2api/config.json
+Restart=always
+RestartSec=3
+LimitNOFILE=65535
+Environment=TZ=Asia/Shanghai
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

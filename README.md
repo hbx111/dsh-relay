@@ -2,8 +2,25 @@
 
 dsh 与 wb2api 之间的转发层：`127.0.0.1:7864` → `127.0.0.1:7863`
 
-> **这个包不含任何账号凭据。** `wb2api/auths/` 是空的，需要你自己登录获取。
-> 安装步骤见 [INSTALL.md](./INSTALL.md)。
+> **这个包不含任何账号凭据。** `windows/wb2api/auths/` 只有示例文件，需要你自己登录获取。
+
+## 两个平台
+
+| 平台 | 目录 | 做法 |
+| --- | --- | --- |
+| **Windows** | [`windows/`](./windows) | relay 转发层 + wb2api `passthrough`，政策由 relay 追加到末条 user；另含 dsh 客户端插件 |
+| **Linux** | [`linux/`](./linux) | **不需要 relay**：wb2api 直接 `prompt.mode=custom` 注入 system 槽，systemd 常驻 |
+
+两边用的是同一份政策文本（5286 字节），验证方法也一样——发一次请求看 `usage.prompt_tokens`：
+
+- **1240 上下** → 政策已注入
+- **56~60** → 没读到政策文件（多半是 `prompt.file` 写成了绝对路径）
+
+安装：[windows/INSTALL.md](./windows/INSTALL.md) ｜ [linux/README.md](./linux/README.md)
+
+---
+
+# Windows 部分
 
 ## v1.7 本次更新（2026-11-09）
 
@@ -299,18 +316,25 @@ dsh plugin --profile desktop add "file:%USERPROFILE%\.dsh\policy\plugin"
 ## 目录
 
 ```
-dsh-relay-deploy/
-├─ proxy.py              7864 → 7863 转发层：注入、system 兜底、流式透传
-├─ verify.py             链路自检：能不能通、system 到没到、注入生没生效
-├─ policy-sys.txt        注入用的政策正文
-├─ retry-mode.txt        relay 侧拒绝重试开关（默认 off）
-├─ ov-mode.txt           overseer 档位
-├─ install-relay.ps1     注册转发层（计划任务 / 开机自启 / watchdog）
-├─ install-policy.ps1    只装政策文本
-├─ install-plugin.ps1    装 dsh 客户端插件（可选，见 INSTALL 5.5）
-├─ wb2api/               wb2api 的配置模板、启动脚本、prompts 存档
-│  └─ auths/             空的，放你自己的账号凭据
-└─ plugin/dsh-policy/    dsh 插件源码
+dsh-relay/
+├─ README.md              你在这里
+├─ windows/               Windows：relay + 客户端插件
+│  ├─ proxy.py            7864 → 7863 转发层：注入、system 兜底、流式透传
+│  ├─ verify.py           链路自检：能不能通、system 到没到、注入生没生效
+│  ├─ policy-sys.txt      注入用的政策正文
+│  ├─ retry-mode.txt      relay 侧拒绝重试开关（默认 off）
+│  ├─ ov-mode.txt         overseer 档位
+│  ├─ install-relay.ps1   注册转发层（计划任务 / 开机自启 / watchdog）
+│  ├─ install-policy.ps1  只装政策文本
+│  ├─ install-plugin.ps1  装 dsh 客户端插件（可选，见 INSTALL 5.5）
+│  ├─ wb2api/             wb2api 的配置模板、启动脚本、prompts 存档
+│  │  └─ auths/           空的，放你自己的账号凭据
+│  └─ plugin/dsh-policy/  dsh 插件源码（拒绝重试 + 流内判拒）
+└─ linux/                 Linux：不需要 relay，wb2api 直连
+   ├─ install.sh          一键安装（--build 构建 / --binary 现成）
+   ├─ wb2api.service      systemd 单元
+   ├─ config.example.json 配置模板（api_key 为占位符）
+   └─ policy-sys.txt      同一份政策正文（md5 与 windows 版一致）
 ```
 
 ## 许可
