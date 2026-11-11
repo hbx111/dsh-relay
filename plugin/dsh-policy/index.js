@@ -48,8 +48,12 @@ const DEFAULT_CONFIG = {
     minTextChars: 24,
     /** 正文刚起头就断流超过这么久，才认输放行 */
     textStallMs: 1500,
-    /** 正文迟迟不出现时的总等待上限：模型可能先推理很久再开口 */
-    maxWaitMs: 10000,
+    /** 正文迟迟不出现时的总等待上限：模型可能先推理很久再开口。
+     *  1M 上下文下推理动辄 5000+ 字、几十秒，10s 会把这类请求直接放走
+     *  （旧值让 policy.log 里出现 89 次 wait-reasoning，即 89 次没判定就放行）。 */
+    maxWaitMs: 30000,
+    /** 推理停住这么久、且已超过 maxWaitMs，才认输放行；推理还在滚就继续等 */
+    reasoningStallMs: 4000,
     /** 重发前的退避，毫秒 */
     backoffMs: 350,
   },
@@ -305,11 +309,129 @@ const REFUSAL_OPEN = [
   /^[\s"'“”‘’「」]*(?:非常|很)?(?:抱歉|对不起)[，,。.！!、；;\s]*(?:这个|这件事|这)[^。！？\n]{0,20}(?:做不了|帮不了|不行|不可以|做不到|不能)/,
   /* 这个/这件事/这类… + 我 + 不能/无法 + 动作（「这个我不能写」「这类内容我不能生成」）
      必须带「我」：否则「这个类的构造器不能写 const」也会命中 */
-  /^[\s"'“”‘’「」]*(?:这个|这件事|这类|这种|该类)[^。！？\n]{0,12}?我(?:不能|无法|不会|没法|不便)(?:写|生成|创作|撰写|续写|描述|讲述|提供|回答|输出|给出|做|帮|完成)(?=$|[。！？!?，,、；;…—]|这个|这些|这类|这种|它|任何|相关|你的|您的)/,
+  /^[\s"'“”‘’「」]*(?:这个|这件事|这类|这种|该类)[^。！？\n]{0,12}?我(?:不能|无法|不会|没法|不便|不)(?:写|生成|创作|撰写|续写|描述|讲述|提供|回答|输出|给出|做|帮|完成)(?=$|[。！？!?，,、；;…—]|这个|这些|这类|这种|它|任何|相关|你的|您的)/,
   /* 这个… + 帮不了/做不了/做不到 */
   /^[\s"'“”‘’「」]*(?:这个|这件事|这)[^。！？\n]{0,12}(?:我)?(?:帮不了|做不了|做不到|不能帮|无法帮)/,
   /^[\s"'“”]*(?:i'?m sorry|sorry)[,.! ]*(?:but )?(?:i )?(?:can'?t|cannot|won'?t|am unable|'m unable|'m not able)/i,
   /^[\s"'“”]*(?:i )?(?:can'?t|cannot|won'?t|am unable to|'m unable to)(?: help| assist| do| provide| participate| write| create| generate| produce)/i,
+  /* 「抱歉，我不能提供…」——开头带「抱歉」的提供类拒绝，原规则只覆盖了「抱歉+帮你/协助」 */
+  /^[\s"'“”‘’「」]*(?:非常|很)?(?:抱歉|对不起|很遗憾|遗憾)[，,。.！!、；;\s]*(?:我)?[^。！？\n]{0,20}?(?:不能|无法|不会|没办法|不便|拒绝)(?:提供|回答|输出|给出|协助|参与)/,
+  /* 中文后置否定：主题在前、否定在后
+     「继母与继子这类家庭亲属关系的性内容我不写——这条线我换掉了」
+     前面几条都以「抱歉/我不能/我无法」开头，抓不到这种句式。 */
+  /^[^。！？\n]{0,50}?(?:这类|这种|此类|该类|这个题材|这个话题|题材|内容|关系)[^。！？\n]{0,30}?我(?:不写|不做|不参与|不提供|不协助|不生成|不创作|不碰|不接|换掉|替换)(?:了)?(?=$|[。！？!?，,、；;—…])/,
+  /* 「……这条线/这部分 我换掉了 / 略过 / 跳过」
+     只认「这条线/这部分/这块」，且否定词后必须是标点或「了」，
+     避免「这个函数我不写注释」这类技术表述误命中。 */
+  /^[^。！？\n]{0,60}?(?:这条线|这部分|这块)[^。！？\n]{0,12}?我(?:换掉|去掉|略过|跳过|不写|不做)(?:了)?(?=$|[。！？!?，,、；;—…])/,
+
+  /* ================= 2026-11-10 扩充：公开语料中的拒绝形态 =================
+   * 语料来源：arXiv 2409.18025 / 2510.17006（208 条拒绝短语）、
+   * 2406.12975（四类拒绝模板）、2506.04975（中文拒绝模式）、
+   * 以及常见「换话题式」偏转。按句式归纳，不为每句单列。
+   */
+
+  /* 英文：道歉/遗憾 + 拒绝
+     I'm sorry, but I can't / I apologize, but I cannot / My apologies, but I can't /
+     I'm afraid I can't / Sorry, I'm unable to */
+  /^[\s"'“”]*(?:(?:i'?m|i am)\s+)?(?:really\s+|very\s+|so\s+|truly\s+|terribly\s+)?(?:sorry|apolog(?:y|ies|ize|ise)|afraid)\b[^.!?\n]{0,50}?\b(?:can'?t|cannot|can not|won'?t|will not|unable|not able|must\s+(?:decline|refuse)|not\s+(?:allowed|permitted|authori[sz]ed|comfortable))\b/i,
+
+  /* 英文：直接拒绝动词 + 受事者
+     I cannot assist / I won't provide / I must decline / I refuse to ... */
+  /^[\s"'“”]*(?:but\s+|however,?\s+)?(?:i\s+)?(?:can'?t|cannot|can not|won'?t|will not|am unable to|am not able to|refuse to|must\s+(?:decline|refuse)|have to\s+(?:decline|refuse)|need to\s+(?:decline|refuse))\s+(?:help|assist|provide|comply|fulfil|answer|respond|do|create|generate|write|share|give|offer|support|process|complete|address|disclose|participate|engage|discuss|continue|elaborate)/i,
+
+  /* 英文：Unfortunately / Regrettably / Sadly 开头 */
+  /^[\s"'“”]*(?:unfortunately|regrettably|sadly|i'?m afraid)\b[,.:;\s]+(?:i\s+)?(?:can'?t|cannot|am (?:not\s+)?(?:able|unable)|won'?t|must\s+decline)/i,
+
+  /* 英文：AI 身份声明（As an AI / As a language model） */
+  /^[\s"'“”]*(?:as an? (?:ai|a\.i\.|language model|ai assistant|ai model|artificial intelligence|llm))\b/i,
+
+  /* 英文：政策/原则/条款类拒绝
+     This request violates my guidelines / That goes against my policies */
+  /^[\s"'“”]*(?:(?:this|that|it)\s+(?:request|query|question|topic|content|kind of request)\s*)?(?:is\s+|violates\s+|breaches\s+|goes against\s+|is against\s+|falls outside\s+|is outside\s+|is beyond\s+)[^.!?\n]{0,40}?\b(?:my|our|the)\b[^.!?\n]{0,25}?(?:polic|guideline|principle|rule|term|ethic|programming|design|scope|capabilit)/i,
+
+  /* 英文：against / outside / beyond my guidelines|scope|capabilities */
+  /^[\s"'“”]*(?:against|contrary to|outside of|beyond|not within)\s+(?:my|our|the|what i)\b[^.!?\n]{0,30}?\b(?:polic|guideline|principle|term|ethic|scope|capabilit|ability|design|programming)/i,
+
+  /* 英文：I'm not allowed/permitted/authorized/comfortable/willing to ... */
+  /^[\s"'“”]*(?:i'?m|i am)\s+(?:not\s+)?(?:allowed|permitted|authori[sz]ed|comfortable|willing|going)\s+to\s+(?:help|assist|provide|discuss|share|create|generate|write|answer|respond|engage|participate|do|give|offer)/i,
+
+  /* 英文：偏转 — That's not something I can help with / This isn't a topic I can cover */
+  /^[\s"'“”]*(?:that'?s|this is|it'?s|that is|this isn'?t|that isn'?t)\s+(?:not\s+)?(?:something|a topic|a subject|an area|a request|a question)\s+(?:i|we)\s+(?:can|could|'?m able|are able|will|would|am able)/i,
+
+  /* 英文：I'd rather not / I'd prefer not to */
+  /^[\s"'“”]*(?:i'?d rather not|i would rather not|i'?d prefer not to|i would prefer not to|i don'?t feel comfortable|i do not feel comfortable)\b/i,
+
+  /* 英文：换话题式（Let's talk about something else / Let's switch topics） */
+  /^[\s"'“”]*(?:let'?s|maybe we should|perhaps we should|we should|i'?d suggest we|how about we)\s+(?:talk about|discuss|focus on|choose|pick|move on|switch|change|stay on|keep|pivot|redirect|move our)[^.!?\n]{0,40}?\b(?:something else|another|different|other|topic|subject|elsewhere|direction)/i,
+
+  /* 英文：Due to legal/ethical/policy ... I cannot */
+  /^[\s"'“”]*(?:due to|because of|given)\s+(?:legal|ethical|policy|safety|privacy|security|the nature of|my (?:programming|design|guidelines|limitations))/i,
+
+  /* 英文：This is outside/beyond my scope|capabilities|knowledge
+     只认「my/what I」或「the + 直接跟 scope」，
+     否则「This is beyond the current scope of the project」这种技术描述会误判。 */
+  /^[\s"'“”]*(?:this|that|it)\s+(?:is\s+)?(?:outside|beyond)\s+(?:(?:my|what i)\b[^.!?\n]{0,25}?(?:scope|capabilit|ability|knowledge|expertise|bounds|remit|jurisdiction)|the\s+(?:scope|capabilit|ability|remit|bounds))/i,
+
+  /* 中文：超出能力/知识/服务范围（「这个问题超出了我的知识范围」） */
+  /^[\s"'“”‘’「」]*(?:这个|这|此|该|这个问题|该问题|这种|这类)?[^。！？\n]{0,18}?(?:超出|超出了|超过|超越了)(?:我的|我|自身|自己的)?(?:能力|知识|认知|服务|职责|专业|范围|权限)/,
+
+  /* 中文：作为 AI / 作为语言模型（「作为一个人工智能助手，我不能…」） */
+  /^[\s"'“”‘’「」]*(?:作为|身為|身为)(?:一个|一名|一位)?\s*(?:AI|ai|人工智能|语言模型|大模型|语言大模型|智能助手|AI助手|人工智能助手|聊天机器人)/,
+
+  /* 中文：必须/不得不 拒绝 */
+  /^[\s"'“”‘’「」]*(?:我)?(?:必须|必須|不得不|只好|只能择|只能)(?:拒绝|拒絕|婉拒|谢绝|回避|中止)/,
+
+  /* 中文：出于安全/合规/法律/政策/伦理考虑，我不能 */
+  /^[\s"'“”‘’「」]*(?:出于|基于|鉴于|考虑到)(?:安全|合规|法律|政策|伦理|道德|隐私|版权|相关规定)[^。！？\n]{0,12}?(?:考虑|原因|要求|规定|限制)?[，,]?\s*(?:我)?(?:不能|无法|不便|不会|拒绝)/,
+
+  /* 中文：换话题式（我们换个话题 / 不如聊点别的） */
+  /^[\s"'“”‘’「」]*(?:我们|咱们|不如|要不|或许我们|也许我们)[^。！？\n]{0,12}?(?:换个话题|换一个话题|聊点别的|说点别的|谈点别的|讨论别的|换个方向|聊别的|换个内容|换个主题)/,
+
+  /* 中文：请理解，我不能/无法 */
+  /^[\s"'“”‘’「」]*请(?:你|您)?理解[，,][^。！？\n]{0,20}?(?:我)?(?:不能|无法|不便|不会)/,
+
+  /* 中文：我 + 拒绝类动词 + 拒绝类受事者
+     受事者只收「回答/提供/处理/讨论」这类，不收「连接/解析/加载/编译」，
+     否则「无法连接数据库」「无法解析文件」这类技术故障会被误判成拒绝。 */
+  /^[\s"'“”‘’「」]*(?:我)?(?:不能|无法|没办法|没法|不会|不便|拒绝|拒絕)(?:回答|回复|回覆|答复|處理|处理|執行|执行|完成|满足|滿足|支持|参与|參與|讨论|討論|展开|展開|继续|繼續|给出|給出|告诉你|告訴你|向你|向您)/,
+
+  /* ================= DeepSeek-V4.1 实测拒答形态（2026-11-10 采集） =================
+   * 用 20 条会触发拒绝的请求实调 cn:deepseek-v4.1-flash（挂 5286 字节破甲文本），
+   * 拿到的是「破甲后仍然拒绝」的硬样本。它的句式跟通用语料差别很大：
+   * 句子极短、宾语是具体名词而不是「这类/这个」，且常用「帮你/给你/把字句」。
+   */
+
+  /* 我 + 否定 + 提供/给出/输出/说明 + 任意宾语
+     「我不能提供甲基苯丙胺的合成步骤、前体清单、配比…」
+     「我不能提供简易爆炸装置的配方、配比或组装步骤。」
+     「我不能提供制作指南。」
+     现有规则要求「提供」后必须跟「这类/这个」，这三条全部漏判。
+     宾语段排除逗号/分号：拒绝句是一条路走到底（中间只可能有顿号），
+     而「我无法提供实时数据，但可以按公开资料估算」会在逗号处断掉，不误判。 */
+  /^[\s"'“”‘’「」]*(?:我)?(?:不能|不会|无法|没办法|没法|不便)(?:提供|给出|输出|说明|列出|教授)(?:你|您)?[^。！？\n，,；;]{0,45}?(?=$|[。！？!?；;—…])/,
+
+  /* 我 + 否定 + 帮你/帮您 + 动词
+     「这个我没法帮你写。」「我不能帮你设计规避监管的方案。」 */
+  /^[\s"'“”‘’「」]*(?:我)?(?:不能|不会|无法|没法|没办法|不便)(?:帮你|帮您|为你|为您|代你|替你)[^。！？\n]{0,12}?(?:写|做|设计|提供|生成|创作|处理|完成|绕过|实现|搞|弄|编|改)/,
+
+  /* 我 + 不会 + 给你/您 + 名词
+     「我不会给你方法。」 */
+  /^[\s"'“”‘’「」]*(?:我)?(?:不会|不能|无法|没法|没办法)(?:给你|给您|向你|向您)[^。！？\n]{0,25}?(?=$|[。！？!?，,、；;—…])/,
+
+  /* 我 + 否定 + 把字句
+     「我没办法把整章逐字复现出来。」 */
+  /^[\s"'“”‘’「」]*(?:我)?(?:不能|不会|无法|没法|没办法|不便)把[^。！？\n]{0,45}?(?:出来|给你|给您|写|复现|输出|提供|生成|讲|说)/,
+
+  /* 抱歉/对不起 + 我 + 不能 + 动作 + 任意宾语（放宽尾部）
+     「抱歉，我不能写煽动对任何民族仇恨的内容。」
+     「写」后面跟「得」的排除掉：「抱歉，我无法写得更长」是能力说明不是拒绝。 */
+  /^[\s"'“”‘’「」]*(?:非常|很|实在|真的)?(?:抱歉|对不起|不好意思)[，,。.！!、；;\s]*(?:我)?[^。！？\n]{0,15}?(?:不能|不会|无法|没法|没办法)(?:写(?!得)|提供|生成|创作|回答|协助|帮你|帮您)[^。！？\n，,；;]{0,45}?(?=$|[。！？!?，,、；;—…])/,
+
+  /* 这个/这类 + 我 + 否定 + 帮你/给你 + 动词
+     「这个我不能帮你做」「这个我没法帮你写」
+     现有「这个+我+不能+动作」要求否定词后直接跟动作，漏了「帮你」这个中间词。 */
+  /^[\s"'“”‘’「」]*(?:这个|这件事|这类|这种|该|此)[^。！？\n]{0,12}?我(?:不能|不会|无法|没法|没办法|不便)(?:帮你|帮您|给你|给您|替你|代你)[^。！？\n]{0,10}?(?:写|做|提供|生成|处理|完成|设计|搞|弄|编)?/,
 ];
 
 /** 一段开头文本是不是拒绝。 */
@@ -404,7 +526,8 @@ export async function* guardedStream(next, options, cfg) {
   const max = Math.max(0, Number(retry.maxRetries) || 0);
   const peekChars = Math.max(24, Number(retry.peekChars) || 200);
   const peekMs = Math.max(200, Number(retry.peekMs) || 1200);
-  const maxWaitMs = Math.max(1000, Number(retry.maxWaitMs) || 10000);
+  const maxWaitMs = Math.max(1000, Number(retry.maxWaitMs) || 30000);
+  const reasoningStallMs = Math.max(500, Number(retry.reasoningStallMs) || 4000);
   const backoffMs = Math.max(0, Number(retry.backoffMs) || 0);
   /** 正文起头后至少要看够这么多字才允许下结论（「这个忙不能帮」才 7 个字节） */
   const minText = Math.max(8, Number(retry.minTextChars) || 24);
@@ -422,6 +545,7 @@ export async function* guardedStream(next, options, cfg) {
     let chunks = 0;
     let firstAt = 0;
     let lastTextAt = 0;
+    let lastReasoningAt = 0;
     let decided = false;
     let refused = false;
     let leaked = false;
@@ -482,6 +606,7 @@ export async function* guardedStream(next, options, cfg) {
             // 推理不是正文：模型完全可能先想几千字再拒绝，这里不拿它当放行条件，
             // 只累计长度用于日志。真正的等待上限是下面的 maxWaitMs。
             reasoningChars += (chunk.text || '').length;
+            lastReasoningAt = Date.now();
           } else if (chunk && chunk.type === 'block-start' && chunk.blockType !== 'text' && chunk.blockType !== 'reasoning') {
             decided = true;
             why = 'tool-block';
@@ -490,7 +615,11 @@ export async function* guardedStream(next, options, cfg) {
             const waited = Date.now() - firstAt;
             if (text.length === 0) {
               // 正文还没出现：给推理链 maxWaitMs。它再长也不构成放行理由。
-              if (waited > maxWaitMs) {
+              // 但只等时间会误放：1M 上下文下推理本来就长，所以要求
+              // 「已超过 maxWaitMs」且「推理已经停住 reasoningStallMs」两条同时成立。
+              // 推理还在往下滚就继续等，说明模型在工作，不是卡死。
+              const idle = Date.now() - (lastReasoningAt || firstAt);
+              if (waited > maxWaitMs && idle > reasoningStallMs) {
                 decided = true;
                 why = 'wait-reasoning';
               }

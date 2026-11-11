@@ -71,8 +71,8 @@
     "sanitize_blacklist_fingerprints": true
   },
   "prompt": {
-    "mode": "passthrough",
-    "file": ""
+    "mode": "custom",
+    "file": "prompts/unlock-workbuddy-original.txt"
   },
   "upstash": {
     "url": "",

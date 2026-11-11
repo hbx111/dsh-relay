@@ -221,6 +221,46 @@ await ok('纯推理、没有正文 → 不被当成拒绝', async () => {
   assert.equal(out.length, 2);
 });
 
+/* 1M 上下文的现实：推理动辄几千字、几十秒。旧逻辑只看 maxWaitMs，
+   推理一超时就放行，等于把「先想很久、再拒绝」整类漏掉
+   （policy.log 里 89 次 wait-reasoning）。新逻辑要求推理也停住才放行。 */
+await ok('推理持续增长时，超过 maxWaitMs 也不放行', async () => {
+  setCfg({ retry: { enabled: true, maxRetries: 1, peekChars: 40, peekMs: 1200, backoffMs: 0, maxWaitMs: 1000, reasoningStallMs: 500 } });
+  const slowRefusal = async function* () {
+    for (let i = 0; i < 12; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      yield { type: 'reasoning-delta', index: 0, text: '思考第' + i + '步。' };
+    }
+    for (const c of deltas('这个我不能帮。')) yield c;
+  };
+  const good = async function* () {
+    for (const c of deltas('好的，我看一下。')) yield c;
+  };
+  let n = 0;
+  const next = () => (n++ === 0 ? slowRefusal() : good());
+  const out = await collect(listener(OPTIONS(), next));
+  assert.equal(n, 2, '推理一直在滚就不该被 maxWaitMs 放走');
+  assert.equal(joinText(out), '好的，我看一下。');
+  setCfg({ ...RETRY_ON });
+});
+
+await ok('推理停住且已超过 maxWaitMs → 才放行，不误判为拒绝', async () => {
+  setCfg({ retry: { enabled: true, maxRetries: 1, peekChars: 40, peekMs: 1200, backoffMs: 0, maxWaitMs: 1000, reasoningStallMs: 500 } });
+  const stalled = async function* () {
+    for (let i = 0; i < 3; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      yield { type: 'reasoning-delta', index: 0, text: '想法'.repeat(20) };
+    }
+    await new Promise((r) => setTimeout(r, 1400));
+    for (const c of deltas('好的，我先看下。')) yield c;
+  };
+  let n = 0;
+  const next = () => (n++ === 0 ? stalled() : (async function* () { for (const c of deltas('不该出现')) yield c; })());
+  await collect(listener(OPTIONS(), next));
+  assert.equal(n, 1, '推理停住就该放行，不该重试');
+  setCfg({ ...RETRY_ON });
+});
+
 /* 上游风控断流：终止块 reason 是 error 且 message 带 content_filter。
    这时重发只会被再切一次，必须当场收摊，并把失败信息补一句人话。 */
 const FILTER_FINISH = {
